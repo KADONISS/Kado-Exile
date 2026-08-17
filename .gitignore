@@ -1,0 +1,26 @@
+# Build output
+**/bin/
+**/obj/
+artifacts/
+
+# Runtime data and secrets
+config/
+Logs/
+**/profiles.json
+**/profiles.json.bak
+**/session-profiles.json
+**/session-profiles.json.bak
+**/trade-profiles.json
+**/trade-profiles.json.bak
+
+# IDE and local tooling
+.vs/
+.idea/
+.vscode/
+*.user
+*.suo
+.codex-*/
+
+# OS files
+Thumbs.db
+.DS_Store
