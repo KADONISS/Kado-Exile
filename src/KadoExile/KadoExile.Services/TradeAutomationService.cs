@@ -22,7 +22,7 @@ public sealed class TradeAutomationService(Func<MerchantSnapshot> getSnapshot, F
 		using (PoeTradeClient client = new PoeTradeClient(poeSessionId))
 		{
 			IReadOnlyList<TradeListing> readOnlyList = await client.LoadListingsAsync(context, PoeTradeClient.NormalizeListingLimit(travelLimit), cancellationToken);
-			log.Info("TRADE_LOAD", $"league={context.League}, query={context.QueryId}, listings={readOnlyList.Count}, limit={travelLimit}");
+			log.Info("TRADE_LOAD", $"league={context.League}, query={context.QueryId ?? "embedded"}, listings={readOnlyList.Count}, limit={travelLimit}");
 			purchased = 0;
 			AutomationStopReason automationStopReason = AutomationStopReason.None;
 			foreach (TradeListing listing in readOnlyList.Where((TradeListing item) => item.HasTravelToken))

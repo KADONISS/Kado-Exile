@@ -1,4 +1,4 @@
-# Kado-Exile 0.3.0
+# Kado-Exile 0.6.0
 
 Kado-Exile is an ExileAPI plugin derived from the KadoTool merchant workflow.
 All merchant detection now comes from ExileAPI memory objects; there is no
@@ -24,6 +24,11 @@ The original KadoTool Trade workflow is retained through `Trade URL`,
 `POESESSID`, listing loading and the website Travel endpoint. Only the merchant
 recognition and purchase/move decision path has been replaced with ExileAPI
 memory data.
+
+Version 0.6.0 accepts both saved-search ID links and the Path of Exile Trade
+links that embed a URL-safe Base64/gzip search query. Embedded query filters and
+league are preserved. Trade URLs are limited to 16,384 characters, compressed
+queries to 8 KiB, and expanded queries to 1 MiB.
 
 ## Operation
 
@@ -51,7 +56,7 @@ is temporarily unavailable. It also plays completion audio through WinMM with
 verified error codes, real 0-100 volume control, configurable WAV/MP3 paths and
 an ExileAPI SoundController fallback.
 
-Version 0.2.2 added inventory and currency safety checks. The current 0.3.0
+Version 0.2.2 added inventory and currency safety checks. The current 0.6.0
 build keeps the full-inventory stop, but intentionally disables the
 currency-exhausted stop because some ExileAPI snapshots can report a false
 zero balance. The game remains authoritative when a purchase cannot be paid.
@@ -96,6 +101,9 @@ inventory counts and the memory-backed verification result.
 dotnet test .\Kado-Exile.slnx -c Release
 .\build-release.ps1
 ```
+
+The build script's `-SkipInstall` switch creates the release package without
+copying the plugin DLL into the local ExileAPI directory.
 
 Set `ExileApiPath` when ExileAPI is installed elsewhere:
 

@@ -1,6 +1,9 @@
 using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
@@ -16,6 +19,12 @@ namespace KadoExile.Services;
 
 public sealed class PoeTradeClient : IDisposable
 {
+	private const int MaximumCompressedQueryBytes = 8 * 1024;
+	private const int MaximumExpandedQueryBytes = 1024 * 1024;
+	private const int EmbeddedQuerySegmentThreshold = 16;
+	private static readonly UTF8Encoding StrictUtf8 = new UTF8Encoding(false, true);
+	private static readonly string[] QueryProperties = new string[6] { "status", "stats", "filters", "name", "type", "term" };
+
 	private readonly HttpClient _httpClient;
 
 	public static int NormalizeListingLimit(int requested)
@@ -24,27 +33,36 @@ public sealed class PoeTradeClient : IDisposable
 	}
 
 	public PoeTradeClient(string poeSessionId)
+		: this(poeSessionId, null)
+	{
+	}
+
+	internal PoeTradeClient(string poeSessionId, HttpMessageHandler? handler)
 	{
 		if (string.IsNullOrWhiteSpace(poeSessionId))
 		{
 			throw new ArgumentException("POESESSID chưa được cấu hình.", "poeSessionId");
 		}
-		HttpClientHandler httpClientHandler = new HttpClientHandler
+		if (handler == null)
 		{
-			AutomaticDecompression = DecompressionMethods.All,
-			CookieContainer = new CookieContainer()
-		};
-		httpClientHandler.CookieContainer.Add(new Uri("https://www.pathofexile.com"), new Cookie("POESESSID", poeSessionId.Trim(), "/", ".pathofexile.com")
-		{
-			HttpOnly = true,
-			Secure = true
-		});
-		_httpClient = new HttpClient(httpClientHandler)
+			HttpClientHandler httpClientHandler = new HttpClientHandler
+			{
+				AutomaticDecompression = DecompressionMethods.All,
+				CookieContainer = new CookieContainer()
+			};
+			httpClientHandler.CookieContainer.Add(new Uri("https://www.pathofexile.com"), new Cookie("POESESSID", poeSessionId.Trim(), "/", ".pathofexile.com")
+			{
+				HttpOnly = true,
+				Secure = true
+			});
+			handler = httpClientHandler;
+		}
+		_httpClient = new HttpClient(handler)
 		{
 			BaseAddress = new Uri("https://www.pathofexile.com"),
 			Timeout = TimeSpan.FromSeconds(30L)
 		};
-		_httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("Kado-Exile/0.3.0 (ExileAPI plugin)");
+		_httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("Kado-Exile/0.6.0 (ExileAPI plugin)");
 		_httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 		_httpClient.DefaultRequestHeaders.Referrer = new Uri("https://www.pathofexile.com/trade");
 		_httpClient.DefaultRequestHeaders.TryAddWithoutValidation("Origin", "https://www.pathofexile.com");
@@ -61,29 +79,48 @@ public sealed class PoeTradeClient : IDisposable
 			return false;
 		}
 		string[] array = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
-		if (array.Length >= 4 && array[0].Equals("trade", StringComparison.OrdinalIgnoreCase) && array[1].Equals("search", StringComparison.OrdinalIgnoreCase))
+		if (array.Length == 4 && array[0].Equals("trade", StringComparison.OrdinalIgnoreCase) && array[1].Equals("search", StringComparison.OrdinalIgnoreCase))
 		{
-			context = new TradeSearchContext("trade", string.Empty, array[2], array[3]);
+			string league = Uri.UnescapeDataString(array[2]);
+			string segment = Uri.UnescapeDataString(array[3]);
+			if (LooksLikeEmbeddedQuery(segment))
+			{
+				if (!TryDecodeEmbeddedQuery(segment, out string? queryJson, out error))
+				{
+					return false;
+				}
+				context = new TradeSearchContext("trade", string.Empty, league, null, queryJson);
+				return true;
+			}
+			context = new TradeSearchContext("trade", string.Empty, league, segment);
 			return true;
 		}
-		if (array.Length >= 5 && array[0].Equals("trade2", StringComparison.OrdinalIgnoreCase) && array[1].Equals("search", StringComparison.OrdinalIgnoreCase))
+		if (array.Length == 5 && array[0].Equals("trade2", StringComparison.OrdinalIgnoreCase) && array[1].Equals("search", StringComparison.OrdinalIgnoreCase))
 		{
-			context = new TradeSearchContext("trade2", array[2], array[3], array[4]);
+			context = new TradeSearchContext("trade2", Uri.UnescapeDataString(array[2]), Uri.UnescapeDataString(array[3]), Uri.UnescapeDataString(array[4]));
 			return true;
 		}
-		error = "Link phải là link kết quả tìm kiếm có league và query id.";
+		error = "Link phải là link kết quả tìm kiếm có league và query hợp lệ.";
 		return false;
 	}
 
 	public async Task<IReadOnlyList<TradeListing>> LoadListingsAsync(TradeSearchContext context, int maximum, CancellationToken cancellationToken)
 	{
-		string path = BuildSavedSearchPath(context);
-		using JsonDocument definitionDocument = JsonDocument.Parse(await GetWithRateLimitRetryAsync(path, "đọc định nghĩa tìm kiếm", cancellationToken));
-		if (!definitionDocument.RootElement.TryGetProperty("query", out var value) || value.ValueKind != JsonValueKind.Object)
+		JsonObject jsonObject;
+		if (context.EmbeddedQueryJson != null)
 		{
-			throw new InvalidOperationException("Link Trade không trả về query hợp lệ. Hãy dùng link sau khi đã bấm Search.");
+			jsonObject = JsonNode.Parse(context.EmbeddedQueryJson) as JsonObject ?? throw new InvalidOperationException("Query Trade nhúng không phải JSON object.");
 		}
-		JsonObject jsonObject = (JsonNode.Parse(value.GetRawText()) as JsonObject) ?? throw new InvalidOperationException("Không thể parse query đã lưu.");
+		else
+		{
+			string path = BuildSavedSearchPath(context);
+			using JsonDocument definitionDocument = JsonDocument.Parse(await GetWithRateLimitRetryAsync(path, "đọc định nghĩa tìm kiếm", cancellationToken));
+			if (!definitionDocument.RootElement.TryGetProperty("query", out var value) || value.ValueKind != JsonValueKind.Object)
+			{
+				throw new InvalidOperationException("Link Trade không trả về query hợp lệ. Hãy dùng link sau khi đã bấm Search.");
+			}
+			jsonObject = (JsonNode.Parse(value.GetRawText()) as JsonObject) ?? throw new InvalidOperationException("Không thể parse query đã lưu.");
+		}
 		jsonObject.Remove<string, JsonNode>("pricetype", out var value2);
 		JsonObject jsonObject2 = new JsonObject
 		{
@@ -98,8 +135,6 @@ public sealed class PoeTradeClient : IDisposable
 		using StringContent executeContent = new StringContent(content, Encoding.UTF8, "application/json");
 		using HttpResponseMessage executeResponse = await _httpClient.PostAsync(BuildExecuteSearchPath(context), executeContent, cancellationToken);
 		using JsonDocument executeDocument = JsonDocument.Parse(await ReadOrThrowAsync(executeResponse, "thực thi tìm kiếm", cancellationToken));
-		JsonElement value3;
-		string queryId = (executeDocument.RootElement.TryGetProperty("id", out value3) ? (value3.GetString() ?? context.QueryId) : context.QueryId);
 		if (!executeDocument.RootElement.TryGetProperty("result", out var value4) || value4.ValueKind != JsonValueKind.Array)
 		{
 			throw new InvalidOperationException("GGG không trả về mảng result sau khi thực thi query.");
@@ -111,6 +146,12 @@ public sealed class PoeTradeClient : IDisposable
 		if (array.Length == 0)
 		{
 			return Array.Empty<TradeListing>();
+		}
+		string? queryId = GetString(executeDocument.RootElement, "id");
+		queryId = string.IsNullOrWhiteSpace(queryId) ? context.QueryId : queryId;
+		if (string.IsNullOrWhiteSpace(queryId))
+		{
+			throw new InvalidOperationException("GGG không trả về search id để tải chi tiết listing.");
 		}
 		List<TradeListing> listings = new List<TradeListing>();
 		string[][] chunks = array.Chunk(10).ToArray();
@@ -160,7 +201,120 @@ public sealed class PoeTradeClient : IDisposable
 	private static string BuildSavedSearchPath(TradeSearchContext context)
 	{
 		string value = (string.IsNullOrEmpty(context.RealmPrefix) ? string.Empty : ("/" + Uri.EscapeDataString(context.RealmPrefix)));
-		return $"/api/{context.ApiPrefix}/search{value}/{Uri.EscapeDataString(context.League)}/{Uri.EscapeDataString(context.QueryId)}";
+		return $"/api/{context.ApiPrefix}/search{value}/{Uri.EscapeDataString(context.League)}/{Uri.EscapeDataString(context.QueryId ?? throw new InvalidOperationException("Saved-search id is missing."))}";
+	}
+
+	private static bool LooksLikeEmbeddedQuery(string segment)
+	{
+		return segment.Length > EmbeddedQuerySegmentThreshold || segment.StartsWith("H4sI", StringComparison.Ordinal);
+	}
+
+	private static bool TryDecodeEmbeddedQuery(string segment, out string? queryJson, out string error)
+	{
+		queryJson = null;
+		error = "Query Trade nhúng không hợp lệ.";
+		if (segment.Any((char character) => !char.IsAsciiLetterOrDigit(character) && character != '-' && character != '_'))
+		{
+			error = "Query Trade nhúng phải là Base64URL hợp lệ.";
+			return false;
+		}
+		int remainder = segment.Length % 4;
+		if (remainder == 1 || (long)segment.Length * 3 / 4 > MaximumCompressedQueryBytes)
+		{
+			error = "Query Trade nhúng vượt giới hạn kích thước hoặc Base64URL không hợp lệ.";
+			return false;
+		}
+		string base64 = segment.Replace('-', '+').Replace('_', '/');
+		if (remainder != 0)
+		{
+			base64 = base64.PadRight(base64.Length + 4 - remainder, '=');
+		}
+		byte[] compressed;
+		try
+		{
+			compressed = Convert.FromBase64String(base64);
+		}
+		catch (FormatException)
+		{
+			error = "Query Trade nhúng phải là Base64URL hợp lệ.";
+			return false;
+		}
+		if (compressed.Length > MaximumCompressedQueryBytes)
+		{
+			error = "Query Trade nhúng vượt giới hạn kích thước.";
+			return false;
+		}
+		if (compressed.Length < 18 || compressed[0] != 0x1f || compressed[1] != 0x8b || compressed[2] != 8)
+		{
+			error = "Query Trade nhúng không phải gzip hợp lệ.";
+			return false;
+		}
+		try
+		{
+			using MemoryStream input = new MemoryStream(compressed);
+			using GZipStream gzip = new GZipStream(input, CompressionMode.Decompress);
+			using MemoryStream output = new MemoryStream();
+			byte[] buffer = new byte[8192];
+			int count;
+			while ((count = gzip.Read(buffer, 0, buffer.Length)) > 0)
+			{
+				if (output.Length + count > MaximumExpandedQueryBytes)
+				{
+					error = "Query Trade nhúng vượt giới hạn kích thước sau giải nén.";
+					return false;
+				}
+				output.Write(buffer, 0, count);
+			}
+			byte[] payload = output.ToArray();
+			uint expectedCrc = BinaryPrimitives.ReadUInt32LittleEndian(compressed.AsSpan(compressed.Length - 8, 4));
+			uint expectedSize = BinaryPrimitives.ReadUInt32LittleEndian(compressed.AsSpan(compressed.Length - 4, 4));
+			if (expectedCrc != ComputeCrc32(payload) || expectedSize != unchecked((uint)payload.Length))
+			{
+				error = "Query Trade nhúng gzip bị cắt hoặc checksum không hợp lệ.";
+				return false;
+			}
+			queryJson = StrictUtf8.GetString(payload);
+			using JsonDocument document = JsonDocument.Parse(queryJson, new JsonDocumentOptions { MaxDepth = 64 });
+			if (document.RootElement.ValueKind != JsonValueKind.Object || !QueryProperties.Any((string property) => document.RootElement.TryGetProperty(property, out _)))
+			{
+				queryJson = null;
+				error = "Query Trade nhúng không có cấu trúc tìm kiếm hợp lệ.";
+				return false;
+			}
+			return true;
+		}
+		catch (InvalidDataException)
+		{
+			queryJson = null;
+			error = "Query Trade nhúng không phải gzip hợp lệ hoặc dữ liệu vượt giới hạn.";
+			return false;
+		}
+		catch (DecoderFallbackException)
+		{
+			queryJson = null;
+			error = "Query Trade nhúng không phải UTF-8 hợp lệ.";
+			return false;
+		}
+		catch (JsonException)
+		{
+			queryJson = null;
+			error = "Query Trade nhúng không phải JSON hợp lệ.";
+			return false;
+		}
+	}
+
+	private static uint ComputeCrc32(byte[] bytes)
+	{
+		uint crc = uint.MaxValue;
+		foreach (byte value in bytes)
+		{
+			crc ^= value;
+			for (int bit = 0; bit < 8; bit++)
+			{
+				crc = (((crc & 1) == 0) ? (crc >> 1) : ((crc >> 1) ^ 0xEDB88320u));
+			}
+		}
+		return ~crc;
 	}
 
 	private static string BuildExecuteSearchPath(TradeSearchContext context)

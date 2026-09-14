@@ -100,7 +100,7 @@ public sealed class KadoExilePlugin : BaseSettingsPlugin<Settings>
 		start.OnPressed = (Action)Delegate.Combine(start.OnPressed, new Action(StartTradeAutomation));
 		ButtonNode stop = base.Settings.Stop;
 		stop.OnPressed = (Action)Delegate.Combine(stop.OnPressed, new Action(StopOperation));
-		_log.Info("START", "version=0.3.0, memory source=ExileAPI");
+		_log.Info("START", "version=0.6.0, memory source=ExileAPI");
 		return true;
 	}
 
@@ -430,7 +430,7 @@ public sealed class KadoExilePlugin : BaseSettingsPlugin<Settings>
 		ImGui.EndDisabled();
 		ImGui.BeginDisabled(OperationIsActive);
 		ImGui.InputText("Trade profile name##trade_name", ref _tradeProfileNameBuffer, 128u);
-		ImGui.InputText("Trade URL##trade_url", ref _tradeUrlBuffer, 1024u);
+		ImGui.InputText("Trade URL##trade_url", ref _tradeUrlBuffer, TradeUrlValidator.MaximumLength + 2);
 		ImGui.InputTextMultiline("Item regex##trade_regex", ref _tradeRegexBuffer, 2048u, new System.Numerics.Vector2(-1f, 60f));
 		if (flag)
 		{

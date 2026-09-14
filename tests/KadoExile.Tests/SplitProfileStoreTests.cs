@@ -53,6 +53,23 @@ public sealed class SplitProfileStoreTests
         });
     }
 
+    [Fact]
+    public void EmbeddedQueryUrlSurvivesTradeProfileReload()
+    {
+        WithDirectory(directory =>
+        {
+            var trades = new TradeSearchProfileStore(directory);
+            trades.LoadOrSeed([], null);
+            var url = TradeUrlTests.SampleTradeUrl;
+            trades.Create("Embedded query", url, "Crossing");
+
+            var reloaded = new TradeSearchProfileStore(directory);
+            reloaded.LoadOrSeed([], null);
+
+            Assert.Equal(url, reloaded.ActiveProfile.TradeUrl);
+        });
+    }
+
     private static TradeProfile Legacy(string name, string secret, string query, string regex)
     {
         var now = DateTimeOffset.UtcNow;

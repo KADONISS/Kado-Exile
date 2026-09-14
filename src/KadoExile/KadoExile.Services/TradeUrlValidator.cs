@@ -4,13 +4,26 @@ namespace KadoExile.Services;
 
 public static class TradeUrlValidator
 {
+	public const int MaximumLength = 16_384;
+
 	private static readonly string[] AllowedHosts = new string[4] { "pathofexile.com", "www.pathofexile.com", "pathofexile2.com", "www.pathofexile2.com" };
 
 	public static bool TryValidate(string? value, out Uri? uri, out string error)
 	{
 		uri = null;
 		error = string.Empty;
-		if (!Uri.TryCreate(Normalize(value), UriKind.Absolute, out Uri result))
+		if ((value?.Length ?? 0) > MaximumLength)
+		{
+			error = $"Link Trade vượt quá giới hạn {MaximumLength} ký tự.";
+			return false;
+		}
+		string normalized = Normalize(value);
+		if (normalized.Length > MaximumLength)
+		{
+			error = $"Link Trade vượt quá giới hạn {MaximumLength} ký tự.";
+			return false;
+		}
+		if (!Uri.TryCreate(normalized, UriKind.Absolute, out Uri result))
 		{
 			error = "Link Trade không hợp lệ.";
 			return false;

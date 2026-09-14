@@ -3,14 +3,12 @@ using Xunit;
 
 namespace KadoExile.Tests;
 
-public sealed class RollbackVersionTests
+public sealed class ReleaseVersionTests
 {
     [Fact]
-    public void AssemblyVersion_Is030()
+    public void AssemblyVersion_Is060()
     {
-		var version = typeof(InputController).Assembly.GetName().Version;
-		Assert.NotNull(version);
-		Assert.Equal(0, version.Major);
-		Assert.Equal(3, version.Minor);
+        var version = typeof(InputController).Assembly.GetName().Version;
+        Assert.Equal(new Version(0, 6, 0, 0), version);
     }
 }
